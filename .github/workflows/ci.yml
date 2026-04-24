@@ -1,0 +1,96 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+
+  # ── Unit tests (no LLM API needed) ─────────────────────────────────────────
+  unit-test:
+    name: Unit tests (chunking, retrieval, scoring)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run unit tests with coverage
+        env:
+          GROQ_API_KEY: "test-key-not-used-in-unit-tests"
+        run: |
+          pytest tests/test_rag.py \
+            --cov=app \
+            --cov-report=term-missing \
+            -v \
+            --tb=short
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: .coverage
+
+  # ── 100K lines ingestion test ───────────────────────────────────────────────
+  scale-test:
+    name: Scale test (100K+ documentation lines)
+    runs-on: ubuntu-latest
+    needs: unit-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run 100K line ingestion test
+        env:
+          GROQ_API_KEY: "test-key-not-used"
+        run: |
+          python scripts/ingest_docs.py --lines 100000
+          echo "100K+ line ingestion verified ✓"
+
+  # ── Accuracy benchmark (requires GROQ_API_KEY) ──────────────────────────────
+  accuracy-benchmark:
+    name: Accuracy benchmark (target 92%, sub-2s latency)
+    runs-on: ubuntu-latest
+    needs: unit-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run accuracy benchmark
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python app/benchmark/benchmark.py
+          echo "Accuracy benchmark complete ✓"
